@@ -2,9 +2,9 @@
 // @id             iitc-plugin-quick-fan-fields
 // @name           IITC plugin: Quick Fan Fields
 // @category       Layer
-// @version        1.2.0
+// @version        1.3.0
 // @namespace      https://github.com/jonatkins/ingress-intel-total-conversion
-// @description    Enhanced Export (Stats + Steps in Excel-friendly CSV), UI Tweaks.
+// @description    Post-process key counting for 100% accuracy. Fixes phantom farming requests.
 // @author         Enrique H. (kyke31) using Google Gemini
 // @license        GNU GPLv3
 // @include        https://intel.ingress.com/*
@@ -31,7 +31,7 @@ function wrapper(plugin_info) {
     // =========================================================================
     // CONFIGURATION & STATE
     // =========================================================================
-    self.PLUGIN_VERSION = "1.2.0";
+    self.PLUGIN_VERSION = "1.3.0";
     self.PROJECT_ZOOM = 16;
     self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080']; 
 
@@ -57,7 +57,6 @@ function wrapper(plugin_info) {
     self.stitchPlanData = [];
     
     self.keyReqs = {};              
-    self.farmedGuids = new Set();   
     self.linkMap = new Set();
     self.globalVisitedGuids = new Set();       
 
@@ -122,7 +121,7 @@ function wrapper(plugin_info) {
     };
 
     // =========================================================================
-    // UI BUILDER & INTERACTIONS
+    // UI BUILDER
     // =========================================================================
     self.showDialog = function() {
         if (!self.dialogData) self.dialogData = [];
@@ -151,7 +150,6 @@ function wrapper(plugin_info) {
                             <div class="qff-btn" onclick="window.plugin.quickFanFields.fetchPortals()">Get Portals</div>
                             <div class="qff-btn qff-btn-danger" onclick="window.plugin.quickFanFields.resetAll()">Reset</div>
                             <hr style="width:100%; border:0; border-top:1px solid #444; margin:5px 0;">
-                            
                             <label style="display:block; margin-bottom:4px; font-weight:bold;">Clusters (Areas)</label>
                             <div class="qff-cluster-ctrl">
                                 <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(-1)">-</div>
@@ -159,7 +157,6 @@ function wrapper(plugin_info) {
                                 <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(1)">+</div>
                             </div>
                             <div class="qff-btn" onclick="window.plugin.quickFanFields.recalculatePlan()">Shuffle Layout 🔀</div>
-                            
                             <div id="qff-cluster-summary-box" class="qff-cluster-summary"></div>
                             <div style="margin-top:auto; font-size:10px; color:#888; text-align:center;">v${self.PLUGIN_VERSION}</div>
                         </div>
@@ -172,7 +169,6 @@ function wrapper(plugin_info) {
                         <div id="qff-plan-content" style="flex:1; overflow-y:auto; padding:5px; min-height:0;"></div>
                     </div>
                 </div>
-
                 <div id="qff-stats-footer" class="qff-stats"></div>
             </div>`;
 
@@ -196,7 +192,6 @@ function wrapper(plugin_info) {
         }
     };
 
-    // --- Data Rendering ---
     self.renderTableRows = function() {
         if (!self.dialogData.length) return '<tr><td colspan="3" style="text-align:center; padding:10px;">No portals. Click "Get Portals".</td></tr>';
         return self.dialogData.map(p => `
@@ -211,7 +206,6 @@ function wrapper(plugin_info) {
     self.updateStats = function() {
         var maxKeys = 0;
         Object.values(self.keyReqs).forEach(k => { if(k > maxKeys) maxKeys = k; });
-        
         var dist = self.calculateDistance();
         var ap = (self.allPoints.length * 1750) + (self.generatedLinks.length * 313) + (self.generatedFields.length * 1250);
 
@@ -224,7 +218,6 @@ function wrapper(plugin_info) {
             <div class="qff-stat-item"><span class="qff-stat-val">${ap.toLocaleString()}</span>AP</div>
         `);
 
-        // Cluster Summary
         var summaryHtml = "<div style='font-weight:bold; border-bottom:1px solid #444; margin-bottom:4px;'>Portal Counts</div>";
         if (self.clusters.length > 0 && self.clusters[0].length > 0) {
             summaryHtml += self.clusters.map((c, i) => {
@@ -244,6 +237,9 @@ function wrapper(plugin_info) {
             return;
         }
 
+        // Local tracking set for this render only to prevent persistence bugs
+        var renderedFarmedGuids = new Set();
+
         var html = "";
         self.planSections.forEach(sect => {
             var headerClass = sect.type === 'stitch' ? 'qff-step-stitch-header' : 'qff-step-cluster-header';
@@ -255,9 +251,9 @@ function wrapper(plugin_info) {
                 var totalKeysNeeded = self.keyReqs[s.guid] || 0;
                 
                 var farmHtml = "";
-                if (totalKeysNeeded > 0 && !self.farmedGuids.has(s.guid)) {
+                if (totalKeysNeeded > 0 && !renderedFarmedGuids.has(s.guid)) {
                     farmHtml = `<div style="color:#ffce00; font-weight:bold;">• Farm ${totalKeysNeeded} Keys</div>`;
-                    self.farmedGuids.add(s.guid);
+                    renderedFarmedGuids.add(s.guid);
                 }
                 
                 var actionRows = "";
@@ -281,7 +277,7 @@ function wrapper(plugin_info) {
         div.html(html);
     };
 
-    // --- User Actions ---
+    // --- Actions ---
     self.fetchPortals = function() {
         var list = [];
         var bounds = map.getBounds();
@@ -318,10 +314,12 @@ function wrapper(plugin_info) {
     self.exportPlan = function() {
         if (!self.planSections.length) { alert("No plan to export."); return; }
         
-        // CSV with BOM for Excel
+        // Local tracking for export (consistent with render)
+        var exportFarmedGuids = new Set();
+
         let csvContent = "\uFEFF"; 
         
-        // --- 1. Stats Header ---
+        // Stats
         var maxKeys = 0;
         Object.values(self.keyReqs).forEach(k => { if(k > maxKeys) maxKeys = k; });
         var dist = self.calculateDistance();
@@ -333,10 +331,8 @@ function wrapper(plugin_info) {
         csvContent += `Total Links,${self.generatedLinks.length}\n`;
         csvContent += `Max Keys Needed,${maxKeys}\n`;
         csvContent += `Walking Distance,${dist} km\n`;
-        csvContent += `Total AP,${ap.toLocaleString().replace(/,/g, "")}\n`; // safe integer
-        csvContent += "\n";
+        csvContent += `Total AP,${ap.toLocaleString().replace(/,/g, "")}\n\n`;
 
-        // --- 2. Cluster Summary ---
         if (self.clusters.length > 0) {
             csvContent += "CLUSTER SUMMARY\n";
             self.clusters.forEach((c, i) => {
@@ -346,7 +342,6 @@ function wrapper(plugin_info) {
             csvContent += "\n";
         }
 
-        // --- 3. Plan Steps ---
         csvContent += "EXECUTION PLAN\n";
         csvContent += "Section,Step ID,Portal Name,Action,Check\n";
 
@@ -354,15 +349,18 @@ function wrapper(plugin_info) {
             sect.steps.forEach(s => {
                 let sectionName = sect.title.replace(/,/g, ""); 
                 let portalName = s.name.replace(/,/g, ""); 
-                // Quote if comma exists just in case
                 if(portalName.includes(",")) portalName = `"${portalName}"`;
                 
                 let actions = [];
                 if (sect.type === 'stitch' && s.visitedBefore) actions.push("Arrive"); else actions.push("Capture");
-                if (self.keyReqs[s.guid] > 0) actions.push(`Farm ${self.keyReqs[s.guid]} Keys`);
-                s.links.forEach(l => actions.push(l));
                 
-                // Join actions with a separator that isn't a comma
+                // Check key req
+                if (self.keyReqs[s.guid] > 0 && !exportFarmedGuids.has(s.guid)) {
+                    actions.push(`Farm ${self.keyReqs[s.guid]} Keys`);
+                    exportFarmedGuids.add(s.guid);
+                }
+
+                s.links.forEach(l => actions.push(l));
                 let actionStr = actions.join(" | ").replace(/,/g, "");
                 csvContent += `${sectionName},${s.label},${portalName},${actionStr}, \n`;
             });
@@ -378,12 +376,11 @@ function wrapper(plugin_info) {
     };
 
     // =========================================================================
-    // CORE LOGIC (Two-Pass System)
+    // CORE LOGIC 
     // =========================================================================
     self.recalculatePlan = function() {
         self.clearLayers();
 
-        // 1. Initialize
         self.allPoints = self.dialogData.map(d => ({
             guid: d.guid,
             latlng: L.latLng(d.lat, d.lng),
@@ -397,12 +394,11 @@ function wrapper(plugin_info) {
             return;
         }
 
-        // 2. Global Analysis & Clustering
         var globalHullPoints = self.convexHull(self.allPoints);
         self.globalPerimeterGuids = globalHullPoints.map(p => p.guid);
         self.performBisectingKMeans(self.clusterCount); 
 
-        // 3. Reset Simulation
+        // Reset
         self.generatedLinks = [];
         self.generatedFields = [];
         self.keyReqs = {}; 
@@ -411,8 +407,10 @@ function wrapper(plugin_info) {
         self.clusterHulls = [];
         self.clusterPlanData = []; 
         self.stitchPlanData = [];  
+        self.planSections = [];
+        self.globalVisitedGuids = new Set();
 
-        // 4. PASS 1: Calculate ALL Links and Key Requirements (No text generation yet)
+        // 1. Calculate Links (Cluster + Stitch)
         self.clusters.forEach((clusterPoints, idx) => {
             self.calcClusterLinks(clusterPoints, idx);
         });
@@ -421,14 +419,14 @@ function wrapper(plugin_info) {
             self.calcStitchLinks();
         }
 
-        // 5. PASS 2: Generate Plan Steps (Using final keyReqs)
-        self.planSections = [];
-        self.globalVisitedGuids = new Set();
-        self.farmedGuids = new Set();
+        // 2. Post-Process: Count Keys based on Generated Links
+        // This ensures 100% accuracy. Keys = Incoming Links.
+        self.calculateKeyRequirements();
 
-        self.generatePlanText(); // Converts calculated data to steps
+        // 3. Generate Text Steps
+        self.generatePlanText(); 
 
-        // 6. Update UI
+        // 4. Update UI
         self.dialogData.forEach(d => {
             var pt = self.allPoints.find(p => p.guid === d.guid);
             if (pt) d.label = pt.label;
@@ -440,13 +438,26 @@ function wrapper(plugin_info) {
         if (self.activeTab === 'plan') self.renderPlanTab();
     };
 
-    /** Pass 1: Calculate Cluster Links and store intent */
+    self.calculateKeyRequirements = function() {
+        // Reset key reqs
+        self.allPoints.forEach(p => self.keyReqs[p.guid] = 0);
+        
+        // Iterate ALL generated links
+        self.generatedLinks.forEach(link => {
+            // Link is FROM -> TO. 
+            // Ingress requires key of TO.
+            var targetGuid = link.b.guid;
+            if (self.keyReqs[targetGuid] !== undefined) {
+                self.keyReqs[targetGuid]++;
+            }
+        });
+    };
+
     self.calcClusterLinks = function(clusterPoints, idx) {
         if (clusterPoints.length === 0) return;
         var prefix = String.fromCharCode(65 + idx); 
         var color = self.CLUSTER_COLORS[idx % self.CLUSTER_COLORS.length];
 
-        // Hull & Anchor
         var clusterHull = self.convexHull(clusterPoints);
         self.clusterHulls.push({ points: clusterHull, label: prefix });
         
@@ -469,14 +480,11 @@ function wrapper(plugin_info) {
             localVisited.push(target);
             var linkIntents = [];
 
-            // Link to Anchor
             if (!self.hasLink(target, anchor)) {
                 self.addLink(target, anchor, color);
-                self.keyReqs[anchor.guid]++;
                 linkIntents.push({ target: anchor, note: "" });
             }
 
-            // Link to previous
             for (var j = 0; j < localVisited.length - 1; j++) { 
                 var past = localVisited[j];
                 if (past.guid === anchor.guid) continue; 
@@ -484,7 +492,6 @@ function wrapper(plugin_info) {
                 if (!self.hasLink(target, past) && !self.isIntersecting(target, past)) {
                     var fCount = self.countFields(target, past);
                     self.addLink(target, past, color);
-                    self.keyReqs[past.guid]++;
                     var note = fCount > 0 ? ` [+${fCount}F]` : "";
                     linkIntents.push({ target: past, note: note });
                 }
@@ -495,7 +502,6 @@ function wrapper(plugin_info) {
         self.clusterPlanData.push(clusterData);
     };
 
-    /** Pass 1: Calculate Stitch Links and store intent */
     self.calcStitchLinks = function() {
         var stitchStepsMap = new Map(); 
 
@@ -509,8 +515,7 @@ function wrapper(plugin_info) {
                         if (self.hasLink(p1, p2)) return;
                         if (!self.isIntersecting(p1, p2)) {
                             var fCount = self.countFields(p1, p2);
-                            self.addLink(p1, p2, '#FFFFFF'); // Stitch Color
-                            self.keyReqs[p2.guid]++; 
+                            self.addLink(p1, p2, '#FFFFFF'); 
                             var note = fCount > 0 ? ` [+${fCount}F]` : "";
                             
                             if (!stitchStepsMap.has(p1.guid)) {
@@ -533,7 +538,6 @@ function wrapper(plugin_info) {
         }
     };
 
-    /** Pass 2: Generate Text from Data */
     self.generatePlanText = function() {
         self.clusterPlanData.forEach(cData => {
             var sectionSteps = [];
@@ -562,9 +566,6 @@ function wrapper(plugin_info) {
         return `${prefix}${target.label} ${target.data.name}`;
     };
 
-    // =========================================================================
-    // GEOMETRIC & MATH HELPERS
-    // =========================================================================
     self.performBisectingKMeans = function(k) {
         var clusters = [self.allPoints.slice()];
         while (clusters.length < k) {
@@ -648,7 +649,6 @@ function wrapper(plugin_info) {
         var sorted = points.slice().sort((a,b) => a.point.x === b.point.x ? a.point.y - b.point.y : a.point.x - b.point.x);
         var lower = [], upper = [];
         var cross = (o, a, b) => (a.point.x - o.point.x) * (b.point.y - o.point.y) - (a.point.y - o.point.y) * (b.point.x - o.point.x);
-        
         for (var i = 0; i < sorted.length; i++) {
             while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], sorted[i]) <= 0) lower.pop();
             lower.push(sorted[i]);

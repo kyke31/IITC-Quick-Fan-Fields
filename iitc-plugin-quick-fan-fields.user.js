@@ -2,9 +2,9 @@
 // @id             iitc-plugin-quick-fan-fields
 // @name           IITC plugin: Quick Fan Fields
 // @category       Layer
-// @version        1.1.2
+// @version        1.2.0
 // @namespace      https://github.com/jonatkins/ingress-intel-total-conversion
-// @description    UI fixes for Scrollbars, Flex Layouts, Stats Alignment, and Cluster Summary formatting.
+// @description    Enhanced Export (Stats + Steps in Excel-friendly CSV), UI Tweaks.
 // @author         Enrique H. (kyke31) using Google Gemini
 // @license        GNU GPLv3
 // @include        https://intel.ingress.com/*
@@ -31,7 +31,7 @@ function wrapper(plugin_info) {
     // =========================================================================
     // CONFIGURATION & STATE
     // =========================================================================
-    self.PLUGIN_VERSION = "1.1.2";
+    self.PLUGIN_VERSION = "1.2.0";
     self.PROJECT_ZOOM = 16;
     self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080']; 
 
@@ -84,17 +84,12 @@ function wrapper(plugin_info) {
             .qff-tab-btn { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-weight: bold; color: #888; border-right: 1px solid #333; background: #1a1a1a; transition: background 0.2s; }
             .qff-tab-btn:hover { background: #2a2a2a; color: #ddd; }
             .qff-tab-btn.active { background: #204020; color: #fff; border-bottom: 2px solid #3c6; }
-            
             .qff-content-area { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; }
             .qff-tab-content { display: none; height: 100%; flex-direction: column; flex: 1; overflow: hidden; }
             .qff-tab-content.active { display: flex; }
-            
             .qff-layout { display: flex; height: 100%; width: 100%; overflow: hidden; }
-            
-            /* Scroll Fix: min-height: 0 is crucial for nested flex scrolling */
             .qff-list { flex: 1; overflow-y: auto; border-right: 1px solid #444; background-color: #202020; min-height: 0; }
             .qff-sidebar { width: 220px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #1b1b1b; overflow-y: auto; flex-shrink: 0; min-height: 0; }
-            
             .qff-table { width: 100%; border-collapse: collapse; min-width: 300px; }
             .qff-table th, .qff-table td { border: 1px solid #444; padding: 4px; }
             .qff-table th { background-color: #1b3a4b; position: sticky; top: 0; color: #fff; text-align: center; z-index: 2; }
@@ -102,31 +97,25 @@ function wrapper(plugin_info) {
             .qff-col-name { width: 120px; word-wrap: break-word; }
             .qff-col-action { width: auto; }
             .qff-row-del { color: #f55; cursor: pointer; font-weight: bold; text-align: center; }
-            
             .qff-btn { background-color: #204020; border: 1px solid #3c6; color: #fff; padding: 6px; text-align: center; cursor: pointer; border-radius: 2px; user-select: none; }
             .qff-btn:hover { background-color: #306030; }
             .qff-btn:active { background-color: #3c6; color: #000; }
             .qff-btn-danger { background-color: #402020; border: 1px solid #f55; }
             .qff-btn-action { background-color: #1b3a4b; border: 1px solid #4da; }
-            
             .qff-cluster-ctrl { display: flex; align-items: center; background: #222; border: 1px solid #555; border-radius: 4px; margin-bottom: 5px;}
             .qff-cluster-btn { width: 30px; background: #333; color: #fff; text-align: center; cursor: pointer; padding: 5px 0; font-weight: bold; user-select: none; }
             .qff-cluster-btn:hover { background: #444; }
             .qff-cluster-val { flex: 1; text-align: center; font-weight: bold; color: #3c6; }
-            
             .qff-stats { display: flex; justify-content: space-around; background: #111; border-top: 2px solid #4da; padding: 8px; color: #fff; font-size: 12px; flex-shrink: 0; }
             .qff-stat-item { text-align: center; flex: 1; }
             .qff-stat-val { display: block; font-weight: bold; color: #4da; font-size: 14px; margin-bottom: 2px; }
-            
             .qff-cluster-summary { background: #222; border: 1px solid #444; padding: 5px; font-size: 11px; color: #ccc; margin-top: 10px; }
             .qff-summary-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid #333; }
             .qff-summary-row:last-child { border-bottom: none; }
             .qff-summary-label { font-weight: bold; color: #ddd; }
             .qff-summary-val { color: #3c6; font-weight: bold; }
-            
             .qff-step-cluster-header { background: #3c6; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
             .qff-step-stitch-header { background: #d63; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
-            
             .qff-label { font-size: 14px; font-family: 'Arial Black', sans-serif; font-weight: 900; color: #ffce00; text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; text-align: center; pointer-events: none; white-space: nowrap;}
             .qff-label-anchor { color: #00ff00 !important; font-size: 18px; z-index: 1000 !important; }
         `).appendTo("head");
@@ -196,12 +185,10 @@ function wrapper(plugin_info) {
         $('.qff-tab-btn').removeClass('active'); 
         $('#qff-tab-btn-' + tab).addClass('active');
         
-        // Manual toggle to ensure flex layout is respected (fixes regression)
         $('.qff-tab-content').hide(); 
         var target = $('#qff-tab-' + tab);
-        target.css('display', 'flex'); // Force flex
+        target.css('display', 'flex'); 
         
-        // Ensure direction is correct depending on tab
         if(tab === 'config') target.css('flex-direction', 'row'); 
         if(tab === 'plan') {
             target.css('flex-direction', 'column'); 
@@ -267,14 +254,12 @@ function wrapper(plugin_info) {
             sect.steps.forEach(s => {
                 var totalKeysNeeded = self.keyReqs[s.guid] || 0;
                 
-                // Farming Instructions
                 var farmHtml = "";
                 if (totalKeysNeeded > 0 && !self.farmedGuids.has(s.guid)) {
                     farmHtml = `<div style="color:#ffce00; font-weight:bold;">• Farm ${totalKeysNeeded} Keys</div>`;
                     self.farmedGuids.add(s.guid);
                 }
                 
-                // Visit Action
                 var actionRows = "";
                 if (sect.type === 'stitch' && s.visitedBefore) {
                     actionRows += `<div>• Arrive at (Already Captured)</div>`;
@@ -333,25 +318,57 @@ function wrapper(plugin_info) {
     self.exportPlan = function() {
         if (!self.planSections.length) { alert("No plan to export."); return; }
         
-        let csvContent = "data:text/csv;charset=utf-8,";
+        // CSV with BOM for Excel
+        let csvContent = "\uFEFF"; 
+        
+        // --- 1. Stats Header ---
+        var maxKeys = 0;
+        Object.values(self.keyReqs).forEach(k => { if(k > maxKeys) maxKeys = k; });
+        var dist = self.calculateDistance();
+        var ap = (self.allPoints.length * 1750) + (self.generatedLinks.length * 313) + (self.generatedFields.length * 1250);
+
+        csvContent += "PLAN STATISTICS\n";
+        csvContent += `Total Portals,${self.allPoints.length}\n`;
+        csvContent += `Total Fields,${self.generatedFields.length}\n`;
+        csvContent += `Total Links,${self.generatedLinks.length}\n`;
+        csvContent += `Max Keys Needed,${maxKeys}\n`;
+        csvContent += `Walking Distance,${dist} km\n`;
+        csvContent += `Total AP,${ap.toLocaleString().replace(/,/g, "")}\n`; // safe integer
+        csvContent += "\n";
+
+        // --- 2. Cluster Summary ---
+        if (self.clusters.length > 0) {
+            csvContent += "CLUSTER SUMMARY\n";
+            self.clusters.forEach((c, i) => {
+                var prefix = String.fromCharCode(65 + i);
+                csvContent += `Cluster ${prefix},${c.length} Portals\n`;
+            });
+            csvContent += "\n";
+        }
+
+        // --- 3. Plan Steps ---
+        csvContent += "EXECUTION PLAN\n";
         csvContent += "Section,Step ID,Portal Name,Action,Check\n";
 
         self.planSections.forEach(sect => {
             sect.steps.forEach(s => {
                 let sectionName = sect.title.replace(/,/g, ""); 
                 let portalName = s.name.replace(/,/g, ""); 
+                // Quote if comma exists just in case
+                if(portalName.includes(",")) portalName = `"${portalName}"`;
                 
                 let actions = [];
                 if (sect.type === 'stitch' && s.visitedBefore) actions.push("Arrive"); else actions.push("Capture");
                 if (self.keyReqs[s.guid] > 0) actions.push(`Farm ${self.keyReqs[s.guid]} Keys`);
                 s.links.forEach(l => actions.push(l));
                 
+                // Join actions with a separator that isn't a comma
                 let actionStr = actions.join(" | ").replace(/,/g, "");
                 csvContent += `${sectionName},${s.label},${portalName},${actionStr}, \n`;
             });
         });
 
-        var encodedUri = encodeURI(csvContent);
+        var encodedUri = encodeURI("data:text/csv;charset=utf-8," + csvContent);
         var link = document.createElement("a");
         link.setAttribute("href", encodedUri);
         link.setAttribute("download", `qff_plan_clusters_${self.clusterCount}.csv`);

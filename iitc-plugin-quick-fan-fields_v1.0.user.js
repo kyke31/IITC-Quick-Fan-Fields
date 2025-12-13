@@ -2,9 +2,9 @@
 // @id             iitc-plugin-quick-fan-fields
 // @name           IITC plugin: Quick Fan Fields
 // @category       Layer
-// @version        1.0.0
+// @version        1.1.2
 // @namespace      https://github.com/jonatkins/ingress-intel-total-conversion
-// @description    Automated Fanfield planner with K-Means clustering, hull stitching, and export capabilities.
+// @description    UI fixes for Scrollbars, Flex Layouts, Stats Alignment, and Cluster Summary formatting.
 // @author         Enrique H. (kyke31) using Google Gemini
 // @license        GNU GPLv3
 // @include        https://intel.ingress.com/*
@@ -20,14 +20,6 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 function wrapper(plugin_info) {
@@ -39,35 +31,35 @@ function wrapper(plugin_info) {
     // =========================================================================
     // CONFIGURATION & STATE
     // =========================================================================
-    self.PLUGIN_VERSION = "1.0.0";
+    self.PLUGIN_VERSION = "1.1.2";
     self.PROJECT_ZOOM = 16;
-    self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080']; // Rainbow Palette
+    self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080']; 
 
-    // UI & Data State
     self.dialogData = [];
     self.activeTab = 'config';
     self.isLocked = false; 
     self.clusterCount = 1;
 
-    // Visual Layers
     self.layerGroupLinks = null;
     self.layerGroupFields = null;
     self.layerGroupNumbers = null;
 
-    // Algorithm State
-    self.allPoints = [];            // Master list of {guid, latlng, point, data}
-    self.clusters = [];             // Array of Point Arrays (K-Means result)
-    self.clusterHulls = [];         // Array of {points, label} for stitching
-    self.globalPerimeterGuids = []; // GUIDs forming the convex hull of all points
+    self.allPoints = [];            
+    self.clusters = [];             
+    self.clusterHulls = [];         
+    self.globalPerimeterGuids = []; 
 
-    // Plan Results
     self.generatedLinks = [];
     self.generatedFields = [];
-    self.planSections = [];         // Array of {title, type, steps: []}
-    self.globalVisitedGuids = new Set();
-    self.keyReqs = {};              // Map<guid, count>
-    self.farmedGuids = new Set();   // Track farming requests to avoid duplicates
-    self.linkMap = new Set();       // Fast lookup for existing links "guidA_guidB"
+    self.planSections = [];
+    
+    self.clusterPlanData = []; 
+    self.stitchPlanData = [];
+    
+    self.keyReqs = {};              
+    self.farmedGuids = new Set();   
+    self.linkMap = new Set();
+    self.globalVisitedGuids = new Set();       
 
     // =========================================================================
     // INITIALIZATION & CSS
@@ -88,22 +80,21 @@ function wrapper(plugin_info) {
     self.setupCSS = function() {
         $("<style>").prop("type", "text/css").html(`
             #qff-dialog { display: flex; flex-direction: column; height: 100%; font-family: sans-serif; font-size: 12px; color: #ccc; }
-            
-            /* Tabs */
             .qff-tabs { display: flex; border-bottom: 1px solid #444; background: #222; flex-shrink: 0; }
             .qff-tab-btn { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-weight: bold; color: #888; border-right: 1px solid #333; background: #1a1a1a; transition: background 0.2s; }
             .qff-tab-btn:hover { background: #2a2a2a; color: #ddd; }
             .qff-tab-btn.active { background: #204020; color: #fff; border-bottom: 2px solid #3c6; }
-            .qff-tab-content { display: none; height: 100%; flex-direction: column; }
+            
+            .qff-content-area { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; }
+            .qff-tab-content { display: none; height: 100%; flex-direction: column; flex: 1; overflow: hidden; }
             .qff-tab-content.active { display: flex; }
             
-            /* Layout */
-            .qff-content-area { flex: 1; overflow: hidden; position: relative; }
             .qff-layout { display: flex; height: 100%; width: 100%; overflow: hidden; }
-            .qff-list { flex: 1; overflow: auto; border-right: 1px solid #444; background-color: #202020; }
-            .qff-sidebar { width: 220px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #1b1b1b; overflow-y: auto; flex-shrink: 0; }
             
-            /* Tables */
+            /* Scroll Fix: min-height: 0 is crucial for nested flex scrolling */
+            .qff-list { flex: 1; overflow-y: auto; border-right: 1px solid #444; background-color: #202020; min-height: 0; }
+            .qff-sidebar { width: 220px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #1b1b1b; overflow-y: auto; flex-shrink: 0; min-height: 0; }
+            
             .qff-table { width: 100%; border-collapse: collapse; min-width: 300px; }
             .qff-table th, .qff-table td { border: 1px solid #444; padding: 4px; }
             .qff-table th { background-color: #1b3a4b; position: sticky; top: 0; color: #fff; text-align: center; z-index: 2; }
@@ -112,7 +103,6 @@ function wrapper(plugin_info) {
             .qff-col-action { width: auto; }
             .qff-row-del { color: #f55; cursor: pointer; font-weight: bold; text-align: center; }
             
-            /* Controls */
             .qff-btn { background-color: #204020; border: 1px solid #3c6; color: #fff; padding: 6px; text-align: center; cursor: pointer; border-radius: 2px; user-select: none; }
             .qff-btn:hover { background-color: #306030; }
             .qff-btn:active { background-color: #3c6; color: #000; }
@@ -123,16 +113,20 @@ function wrapper(plugin_info) {
             .qff-cluster-btn { width: 30px; background: #333; color: #fff; text-align: center; cursor: pointer; padding: 5px 0; font-weight: bold; user-select: none; }
             .qff-cluster-btn:hover { background: #444; }
             .qff-cluster-val { flex: 1; text-align: center; font-weight: bold; color: #3c6; }
-
-            /* Stats & Headers */
+            
             .qff-stats { display: flex; justify-content: space-around; background: #111; border-top: 2px solid #4da; padding: 8px; color: #fff; font-size: 12px; flex-shrink: 0; }
-            .qff-stat-val { display: block; font-weight: bold; color: #4da; font-size: 14px; text-align: center; }
+            .qff-stat-item { text-align: center; flex: 1; }
+            .qff-stat-val { display: block; font-weight: bold; color: #4da; font-size: 14px; margin-bottom: 2px; }
+            
             .qff-cluster-summary { background: #222; border: 1px solid #444; padding: 5px; font-size: 11px; color: #ccc; margin-top: 10px; }
+            .qff-summary-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid #333; }
+            .qff-summary-row:last-child { border-bottom: none; }
+            .qff-summary-label { font-weight: bold; color: #ddd; }
+            .qff-summary-val { color: #3c6; font-weight: bold; }
             
             .qff-step-cluster-header { background: #3c6; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
             .qff-step-stitch-header { background: #d63; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
             
-            /* Map Elements */
             .qff-label { font-size: 14px; font-family: 'Arial Black', sans-serif; font-weight: 900; color: #ffce00; text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; text-align: center; pointer-events: none; white-space: nowrap;}
             .qff-label-anchor { color: #00ff00 !important; font-size: 18px; z-index: 1000 !important; }
         `).appendTo("head");
@@ -153,44 +147,40 @@ function wrapper(plugin_info) {
                 </div>
 
                 <div class="qff-content-area">
-                    <div id="qff-tab-config" class="qff-tab-content active">
-                        <div class="qff-layout">
-                            <div class="qff-list">
-                                <table class="qff-table">
-                                    <thead><tr>
-                                        <th style="width:30px">ID</th>
-                                        <th>Portal Name</th>
-                                        <th style="width:30px">Del</th>
-                                    </tr></thead>
-                                    <tbody id="qff-table-body">${self.renderTableRows()}</tbody>
-                                </table>
+                    <div id="qff-tab-config" class="qff-tab-content active" style="display:flex; flex-direction:row;">
+                        <div class="qff-list">
+                            <table class="qff-table">
+                                <thead><tr>
+                                    <th style="width:30px">ID</th>
+                                    <th>Portal Name</th>
+                                    <th style="width:30px">Del</th>
+                                </tr></thead>
+                                <tbody id="qff-table-body">${self.renderTableRows()}</tbody>
+                            </table>
+                        </div>
+                        <div class="qff-sidebar">
+                            <div class="qff-btn" onclick="window.plugin.quickFanFields.fetchPortals()">Get Portals</div>
+                            <div class="qff-btn qff-btn-danger" onclick="window.plugin.quickFanFields.resetAll()">Reset</div>
+                            <hr style="width:100%; border:0; border-top:1px solid #444; margin:5px 0;">
+                            
+                            <label style="display:block; margin-bottom:4px; font-weight:bold;">Clusters (Areas)</label>
+                            <div class="qff-cluster-ctrl">
+                                <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(-1)">-</div>
+                                <div class="qff-cluster-val" id="qff-cluster-disp">${self.clusterCount}</div>
+                                <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(1)">+</div>
                             </div>
-                            <div class="qff-sidebar">
-                                <div class="qff-btn" onclick="window.plugin.quickFanFields.fetchPortals()">Get Portals</div>
-                                <div class="qff-btn qff-btn-danger" onclick="window.plugin.quickFanFields.resetAll()">Reset</div>
-                                <hr style="width:100%; border:0; border-top:1px solid #444; margin:5px 0;">
-                                
-                                <label style="display:block; margin-bottom:4px; font-weight:bold;">Clusters (Areas)</label>
-                                <div class="qff-cluster-ctrl">
-                                    <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(-1)">-</div>
-                                    <div class="qff-cluster-val" id="qff-cluster-disp">${self.clusterCount}</div>
-                                    <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(1)">+</div>
-                                </div>
-                                <div class="qff-btn" onclick="window.plugin.quickFanFields.recalculatePlan()">Shuffle Layout 🔀</div>
-                                
-                                <div id="qff-cluster-summary-box" class="qff-cluster-summary">
-                                    </div>
-
-                                <div style="margin-top:auto; font-size:10px; color:#888; text-align:center;">v${self.PLUGIN_VERSION}</div>
-                            </div>
+                            <div class="qff-btn" onclick="window.plugin.quickFanFields.recalculatePlan()">Shuffle Layout 🔀</div>
+                            
+                            <div id="qff-cluster-summary-box" class="qff-cluster-summary"></div>
+                            <div style="margin-top:auto; font-size:10px; color:#888; text-align:center;">v${self.PLUGIN_VERSION}</div>
                         </div>
                     </div>
 
-                    <div id="qff-tab-plan" class="qff-tab-content">
-                        <div style="padding:5px; background:#222; border-bottom:1px solid #444; display:flex; justify-content:flex-end;">
+                    <div id="qff-tab-plan" class="qff-tab-content" style="display:none; flex-direction:column;">
+                        <div style="padding:5px; background:#222; border-bottom:1px solid #444; display:flex; justify-content:flex-end; flex-shrink:0;">
                              <div class="qff-btn qff-btn-action" style="padding:4px 10px; font-size:11px;" onclick="window.plugin.quickFanFields.exportPlan()">Export CSV 💾</div>
                         </div>
-                        <div id="qff-plan-content" style="flex:1; overflow-y:auto; padding:5px;"></div>
+                        <div id="qff-plan-content" style="flex:1; overflow-y:auto; padding:5px; min-height:0;"></div>
                     </div>
                 </div>
 
@@ -203,9 +193,20 @@ function wrapper(plugin_info) {
 
     self.switchTab = function(tab) {
         self.activeTab = tab;
-        $('.qff-tab-btn').removeClass('active'); $('#qff-tab-btn-' + tab).addClass('active');
-        $('.qff-tab-content').removeClass('active'); $('#qff-tab-' + tab).addClass('active');
-        if (tab === 'plan') self.renderPlanTab();
+        $('.qff-tab-btn').removeClass('active'); 
+        $('#qff-tab-btn-' + tab).addClass('active');
+        
+        // Manual toggle to ensure flex layout is respected (fixes regression)
+        $('.qff-tab-content').hide(); 
+        var target = $('#qff-tab-' + tab);
+        target.css('display', 'flex'); // Force flex
+        
+        // Ensure direction is correct depending on tab
+        if(tab === 'config') target.css('flex-direction', 'row'); 
+        if(tab === 'plan') {
+            target.css('flex-direction', 'column'); 
+            self.renderPlanTab();
+        }
     };
 
     // --- Data Rendering ---
@@ -228,23 +229,23 @@ function wrapper(plugin_info) {
         var ap = (self.allPoints.length * 1750) + (self.generatedLinks.length * 313) + (self.generatedFields.length * 1250);
 
         $('#qff-stats-footer').html(`
-            <div><span class="qff-stat-val">${self.allPoints.length}</span>Portals</div>
-            <div><span class="qff-stat-val">${self.generatedFields.length}</span>Fields</div>
-            <div><span class="qff-stat-val">${self.generatedLinks.length}</span>Links</div>
-            <div><span class="qff-stat-val">${maxKeys}</span>Max Keys</div>
-            <div><span class="qff-stat-val">${dist} km</span>Walk</div>
-            <div><span class="qff-stat-val">${ap.toLocaleString()}</span>AP</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${self.allPoints.length}</span>Portals</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${self.generatedFields.length}</span>Fields</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${self.generatedLinks.length}</span>Links</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${maxKeys}</span>Max Keys</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${dist} km</span>Walk</div>
+            <div class="qff-stat-item"><span class="qff-stat-val">${ap.toLocaleString()}</span>AP</div>
         `);
 
         // Cluster Summary
-        var summaryHtml = "<b>Portal Counts:</b><br>";
+        var summaryHtml = "<div style='font-weight:bold; border-bottom:1px solid #444; margin-bottom:4px;'>Portal Counts</div>";
         if (self.clusters.length > 0 && self.clusters[0].length > 0) {
             summaryHtml += self.clusters.map((c, i) => {
                 var prefix = String.fromCharCode(65 + i);
-                return `Cluster ${prefix}: <b>${c.length}</b>`;
-            }).join(" | ");
+                return `<div class="qff-summary-row"><span class="qff-summary-label">Cluster ${prefix}</span><span class="qff-summary-val">${c.length}</span></div>`;
+            }).join("");
         } else {
-            summaryHtml += "None";
+            summaryHtml += "<div style='text-align:center; color:#666;'>-</div>";
         }
         $('#qff-cluster-summary-box').html(summaryHtml);
     };
@@ -310,7 +311,7 @@ function wrapper(plugin_info) {
             var keep = polyLayers.length > 0 ? polyLayers.some(poly => self.isPointInPolygon(latlng, poly)) : bounds.contains(latlng);
             if (keep) {
                 var rawName = p.options.data.title || "Untitled";
-                var cleanName = rawName.replace(/[.,:;#]/g, ''); // Name Sanitization
+                var cleanName = rawName.replace(/[.,:;#]/g, ''); 
                 list.push({ guid: guid, name: cleanName, lat: latlng.lat, lng: latlng.lng });
             }
         });
@@ -360,12 +361,12 @@ function wrapper(plugin_info) {
     };
 
     // =========================================================================
-    // CORE LOGIC & ORCHESTRATION
+    // CORE LOGIC (Two-Pass System)
     // =========================================================================
     self.recalculatePlan = function() {
         self.clearLayers();
 
-        // 1. Initialize Points
+        // 1. Initialize
         self.allPoints = self.dialogData.map(d => ({
             guid: d.guid,
             latlng: L.latLng(d.lat, d.lng),
@@ -379,35 +380,38 @@ function wrapper(plugin_info) {
             return;
         }
 
-        // 2. Global Analysis
+        // 2. Global Analysis & Clustering
         var globalHullPoints = self.convexHull(self.allPoints);
         self.globalPerimeterGuids = globalHullPoints.map(p => p.guid);
-
-        // 3. Clustering
         self.performBisectingKMeans(self.clusterCount); 
 
-        // 4. Reset Plan State
+        // 3. Reset Simulation
         self.generatedLinks = [];
         self.generatedFields = [];
-        self.planSections = [];
-        self.globalVisitedGuids = new Set();
-        self.farmedGuids = new Set();
         self.keyReqs = {}; 
         self.linkMap = new Set();
         self.allPoints.forEach(p => self.keyReqs[p.guid] = 0);
-        self.clusterHulls = []; 
+        self.clusterHulls = [];
+        self.clusterPlanData = []; 
+        self.stitchPlanData = [];  
 
-        // 5. Process Clusters (Fanfields)
+        // 4. PASS 1: Calculate ALL Links and Key Requirements (No text generation yet)
         self.clusters.forEach((clusterPoints, idx) => {
-            self.processCluster(clusterPoints, idx);
+            self.calcClusterLinks(clusterPoints, idx);
         });
 
-        // 6. Process Stitching (Hull Zipper)
         if (self.clusterCount > 1) {
-            self.performStitching();
+            self.calcStitchLinks();
         }
 
-        // 7. Update UI Labels & Render
+        // 5. PASS 2: Generate Plan Steps (Using final keyReqs)
+        self.planSections = [];
+        self.globalVisitedGuids = new Set();
+        self.farmedGuids = new Set();
+
+        self.generatePlanText(); // Converts calculated data to steps
+
+        // 6. Update UI
         self.dialogData.forEach(d => {
             var pt = self.allPoints.find(p => p.guid === d.guid);
             if (pt) d.label = pt.label;
@@ -419,135 +423,131 @@ function wrapper(plugin_info) {
         if (self.activeTab === 'plan') self.renderPlanTab();
     };
 
-    /**
-     * Process a single cluster: Identify anchor, sort points, generate fan links.
-     */
-    self.processCluster = function(clusterPoints, idx) {
+    /** Pass 1: Calculate Cluster Links and store intent */
+    self.calcClusterLinks = function(clusterPoints, idx) {
         if (clusterPoints.length === 0) return;
-        var prefix = String.fromCharCode(65 + idx); // A, B, C...
+        var prefix = String.fromCharCode(65 + idx); 
         var color = self.CLUSTER_COLORS[idx % self.CLUSTER_COLORS.length];
 
-        // Hull Calculation
+        // Hull & Anchor
         var clusterHull = self.convexHull(clusterPoints);
         self.clusterHulls.push({ points: clusterHull, label: prefix });
-
-        // Anchor Selection (Prefer Global Hull)
+        
         var anchor = clusterHull.find(p => self.globalPerimeterGuids.includes(p.guid));
         if (!anchor) anchor = clusterHull[0]; 
 
         var pointsToFan = clusterPoints.filter(p => p.guid !== anchor.guid);
         anchor.label = prefix; 
         
-        // Sorting (Widest Gap)
         var sorted = self.angularSortWithGap(anchor, pointsToFan);
         
-        var steps = [];
-        var localVisited = [anchor];
-        
-        // Add Anchor Step
-        self.globalVisitedGuids.add(anchor.guid);
-        steps.push({ guid: anchor.guid, name: anchor.data.name, label: anchor.label, links: [], visitedBefore: false });
+        var clusterData = { title: `Cluster ${prefix}`, type: 'cluster', steps: [] };
+        clusterData.steps.push({ guid: anchor.guid, name: anchor.data.name, label: anchor.label, links: [], isAnchor: true });
 
-        // Add Target Steps
+        var localVisited = [anchor];
         var subIndex = 1;
+
         sorted.forEach(target => {
             target.label = prefix + subIndex++;
-            self.globalVisitedGuids.add(target.guid);
             localVisited.push(target);
-            
-            var linkActions = [];
-            
+            var linkIntents = [];
+
             // Link to Anchor
             if (!self.hasLink(target, anchor)) {
                 self.addLink(target, anchor, color);
                 self.keyReqs[anchor.guid]++;
-                linkActions.push(`Link to ${self.formatTargetName(anchor)}`);
+                linkIntents.push({ target: anchor, note: "" });
             }
 
-            // Link to previous points in cluster
-            for (var j = 0; j < localVisited.length; j++) {
+            // Link to previous
+            for (var j = 0; j < localVisited.length - 1; j++) { 
                 var past = localVisited[j];
-                if (past.guid === anchor.guid || past.guid === target.guid) continue;
+                if (past.guid === anchor.guid) continue; 
                 
                 if (!self.hasLink(target, past) && !self.isIntersecting(target, past)) {
                     var fCount = self.countFields(target, past);
                     self.addLink(target, past, color);
                     self.keyReqs[past.guid]++;
                     var note = fCount > 0 ? ` [+${fCount}F]` : "";
-                    linkActions.push(`Link to ${self.formatTargetName(past)}${note}`);
+                    linkIntents.push({ target: past, note: note });
                 }
             }
-            
-            steps.push({ guid: target.guid, name: target.data.name, label: target.label, links: linkActions, visitedBefore: false });
+            clusterData.steps.push({ guid: target.guid, name: target.data.name, label: target.label, links: linkIntents });
         });
 
-        self.planSections.push({ title: `Cluster ${prefix}`, type: 'cluster', steps: steps });
+        self.clusterPlanData.push(clusterData);
     };
 
-    /**
-     * Stitching Phase: Connects hull points of different clusters to close global fields.
-     */
-    self.performStitching = function() {
-        var stitchSteps = [];
-        var stitchPlanMap = new Map(); // Use Map to aggregate links per source portal
+    /** Pass 1: Calculate Stitch Links and store intent */
+    self.calcStitchLinks = function() {
+        var stitchStepsMap = new Map(); 
 
-        // Exhaustive Hull-to-Hull check
         for (let i = 1; i < self.clusterHulls.length; i++) {
             let currHull = self.clusterHulls[i];
-            
             for (let j = 0; j < i; j++) {
                 let prevHull = self.clusterHulls[j];
                 
-                // Attempt to link Every Point in CurrHull -> Every Point in PrevHull
                 currHull.points.forEach(p1 => {
                     prevHull.points.forEach(p2 => {
                         if (self.hasLink(p1, p2)) return;
-
                         if (!self.isIntersecting(p1, p2)) {
                             var fCount = self.countFields(p1, p2);
                             self.addLink(p1, p2, '#FFFFFF'); // Stitch Color
-                            // We are at p1 (Cluster B), linking to p2 (Cluster A). Need Key for p2.
                             self.keyReqs[p2.guid]++; 
                             var note = fCount > 0 ? ` [+${fCount}F]` : "";
                             
-                            if (!stitchPlanMap.has(p1.guid)) {
-                                var wasVisited = self.globalVisitedGuids.has(p1.guid);
-                                stitchPlanMap.set(p1.guid, { 
-                                    guid: p1.guid, 
-                                    name: p1.data.name, 
-                                    label: p1.label, 
-                                    links: [], 
-                                    visitedBefore: wasVisited,
-                                    lat: p1.latlng.lat 
+                            if (!stitchStepsMap.has(p1.guid)) {
+                                stitchStepsMap.set(p1.guid, { 
+                                    guid: p1.guid, name: p1.data.name, label: p1.label, lat: p1.latlng.lat, links: [] 
                                 });
                             }
-                            stitchPlanMap.get(p1.guid).links.push(`Link to ${self.formatTargetName(p2)}${note}`);
+                            stitchStepsMap.get(p1.guid).links.push({ target: p2, note: note, prevLabel: prevHull.label });
                         }
                     });
                 });
             }
         }
-
-        // Output formatting
-        stitchSteps = Array.from(stitchPlanMap.values());
-        // Sort North-South for logical traversal flow
-        stitchSteps.sort((a,b) => b.lat - a.lat);
-
-        if (stitchSteps.length > 0) {
-            self.planSections.push({ title: `Stitching (Hull Zipper)`, type: 'stitch', steps: stitchSteps });
+        
+        var steps = Array.from(stitchStepsMap.values());
+        steps.sort((a,b) => b.lat - a.lat);
+        
+        if (steps.length > 0) {
+            self.stitchPlanData = { title: `Stitching (Hull Zipper)`, type: 'stitch', steps: steps };
         }
     };
 
-    // =========================================================================
-    // GEOMETRIC & MATH HELPERS
-    // =========================================================================
+    /** Pass 2: Generate Text from Data */
+    self.generatePlanText = function() {
+        self.clusterPlanData.forEach(cData => {
+            var sectionSteps = [];
+            cData.steps.forEach(s => {
+                self.globalVisitedGuids.add(s.guid);
+                var txtLinks = s.links.map(l => `Link to ${self.formatTargetName(l.target)}${l.note}`);
+                sectionSteps.push({ guid: s.guid, name: s.name, label: s.label, links: txtLinks, visitedBefore: false });
+            });
+            self.planSections.push({ title: cData.title, type: 'cluster', steps: sectionSteps });
+        });
+
+        if (self.stitchPlanData && self.stitchPlanData.steps) {
+            var sectionSteps = [];
+            self.stitchPlanData.steps.forEach(s => {
+                var wasVisited = self.globalVisitedGuids.has(s.guid);
+                var txtLinks = s.links.map(l => `Link to ${self.formatTargetName(l.target)} (${l.prevLabel})${l.note}`);
+                sectionSteps.push({ guid: s.guid, name: s.name, label: s.label, links: txtLinks, visitedBefore: wasVisited });
+            });
+            self.planSections.push({ title: self.stitchPlanData.title, type: 'stitch', steps: sectionSteps });
+        }
+    };
+
     self.formatTargetName = function(target) {
         var isAnchor = /^[A-Z]$/.test(target.label);
         var prefix = isAnchor ? "Anchor " : "";
         return `${prefix}${target.label} ${target.data.name}`;
     };
 
-    /** Bisecting K-Means: Recursively splits the largest cluster to improve density/balance. */
+    // =========================================================================
+    // GEOMETRIC & MATH HELPERS
+    // =========================================================================
     self.performBisectingKMeans = function(k) {
         var clusters = [self.allPoints.slice()];
         while (clusters.length < k) {
@@ -565,7 +565,6 @@ function wrapper(plugin_info) {
         if (points.length < 2) return [points, []];
         var c1 = points[Math.floor(Math.random() * points.length)];
         var c2 = points[Math.floor(Math.random() * points.length)];
-        // Ensure distinct seeds
         var safeGuard = 0;
         while(c1 === c2 && points.length > 1 && safeGuard < 10) { 
             c2 = points[Math.floor(Math.random() * points.length)]; 
@@ -580,7 +579,6 @@ function wrapper(plugin_info) {
         return [group1, group2];
     };
 
-    /** Sort points angularly around anchor, then rotate to start at widest gap. */
     self.angularSortWithGap = function(anchor, points) {
         points.forEach(p => p.angle = Math.atan2(p.point.y - anchor.point.y, p.point.x - anchor.point.x));
         points.sort((a, b) => a.angle - b.angle);
@@ -619,10 +617,8 @@ function wrapper(plugin_info) {
         var count = 0;
         self.allPoints.forEach(p3 => {
             if (p3.guid === p1.guid || p3.guid === p2.guid) return;
-            // Check triangle legs: (p1-p2 is candidate), we need (p1-p3) AND (p2-p3) to exist
             if (self.hasLink(p1, p3) && self.hasLink(p2, p3)) {
                 count++;
-                // Use field color from context of p1 creation or stitch default
                 var fieldColor = self.generatedLinks[self.generatedLinks.length - 1].color || '#FFFFFF'; 
                 self.generatedFields.push({ pts: [p1.latlng, p2.latlng, p3.latlng], color: fieldColor });
             }
@@ -632,7 +628,6 @@ function wrapper(plugin_info) {
 
     self.convexHull = function(points) {
         if (points.length < 3) return points;
-        // Sort by X then Y
         var sorted = points.slice().sort((a,b) => a.point.x === b.point.x ? a.point.y - b.point.y : a.point.x - b.point.x);
         var lower = [], upper = [];
         var cross = (o, a, b) => (a.point.x - o.point.x) * (b.point.y - o.point.y) - (a.point.y - o.point.y) * (b.point.x - o.point.x);

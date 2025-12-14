@@ -4,7 +4,7 @@
 // @category       Layer
 // @version        1.3.0
 // @namespace      https://github.com/jonatkins/ingress-intel-total-conversion
-// @description    Post-process key counting for 100% accuracy. Fixes phantom farming requests.
+// @description    Automated Fanfield planner with K-Means clustering, hull stitching, and export capabilities.
 // @author         Enrique H. (kyke31) using Google Gemini
 // @license        GNU GPLv3
 // @include        https://intel.ingress.com/*
@@ -20,6 +20,16 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
+ *
+ * ----------------------------------------------------------------------------
+ * CHANGELOG
+ * ----------------------------------------------------------------------------
+ * v1.0.0 - Initial Release: K-Means clustering, basic stitching, export.
+ * v1.1.0 - Two-pass calculation for accurate key requirements.
+ * v1.2.0 - Excel-friendly CSV export (BOM), Cluster summaries.
+ * v1.2.1 - Added Location links to export.
+ * v1.3.0 - Post-process key counting, CSV escaping fixes, Code cleanup.
+ * ----------------------------------------------------------------------------
  */
 
 function wrapper(plugin_info) {
@@ -33,32 +43,38 @@ function wrapper(plugin_info) {
     // =========================================================================
     self.PLUGIN_VERSION = "1.3.0";
     self.PROJECT_ZOOM = 16;
-    self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080']; 
+    self.CLUSTER_COLORS = ['#FF0000', '#FFA500', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#800080'];
 
+    // UI & Data State
     self.dialogData = [];
     self.activeTab = 'config';
-    self.isLocked = false; 
+    self.isLocked = false;
     self.clusterCount = 1;
 
+    // Visual Layers
     self.layerGroupLinks = null;
     self.layerGroupFields = null;
     self.layerGroupNumbers = null;
 
-    self.allPoints = [];            
-    self.clusters = [];             
-    self.clusterHulls = [];         
-    self.globalPerimeterGuids = []; 
+    // Algorithm State
+    self.allPoints = [];            // Master list of {guid, latlng, point, data}
+    self.clusters = [];             // Array of Point Arrays (K-Means result)
+    self.clusterHulls = [];         // Array of {points, label} for stitching
+    self.globalPerimeterGuids = []; // GUIDs forming the convex hull of all points
 
+    // Plan Results
     self.generatedLinks = [];
     self.generatedFields = [];
     self.planSections = [];
-    
-    self.clusterPlanData = []; 
+
+    // Internal Calculation Data
+    self.clusterPlanData = [];
     self.stitchPlanData = [];
-    
-    self.keyReqs = {};              
-    self.linkMap = new Set();
-    self.globalVisitedGuids = new Set();       
+
+    self.keyReqs = {};              // Map<guid, count>
+    self.farmedGuids = new Set();   // Track farming requests to avoid duplicates in UI
+    self.linkMap = new Set();       // Fast lookup for existing links
+    self.globalVisitedGuids = new Set();
 
     // =========================================================================
     // INITIALIZATION & CSS
@@ -68,11 +84,11 @@ function wrapper(plugin_info) {
         self.layerGroupLinks = new L.LayerGroup();
         self.layerGroupFields = new L.LayerGroup();
         self.layerGroupNumbers = new L.LayerGroup();
-        
+
         window.addLayerGroup('QFF Links', self.layerGroupLinks, true);
         window.addLayerGroup('QFF Fields', self.layerGroupFields, true);
         window.addLayerGroup('QFF Numbers', self.layerGroupNumbers, true);
-        
+
         $('#toolbox').append('<a onclick="window.plugin.quickFanFields.showDialog()">Quick Fan Fields</a>');
     };
 
@@ -83,12 +99,15 @@ function wrapper(plugin_info) {
             .qff-tab-btn { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-weight: bold; color: #888; border-right: 1px solid #333; background: #1a1a1a; transition: background 0.2s; }
             .qff-tab-btn:hover { background: #2a2a2a; color: #ddd; }
             .qff-tab-btn.active { background: #204020; color: #fff; border-bottom: 2px solid #3c6; }
+
             .qff-content-area { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; }
             .qff-tab-content { display: none; height: 100%; flex-direction: column; flex: 1; overflow: hidden; }
             .qff-tab-content.active { display: flex; }
+
             .qff-layout { display: flex; height: 100%; width: 100%; overflow: hidden; }
             .qff-list { flex: 1; overflow-y: auto; border-right: 1px solid #444; background-color: #202020; min-height: 0; }
             .qff-sidebar { width: 220px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #1b1b1b; overflow-y: auto; flex-shrink: 0; min-height: 0; }
+
             .qff-table { width: 100%; border-collapse: collapse; min-width: 300px; }
             .qff-table th, .qff-table td { border: 1px solid #444; padding: 4px; }
             .qff-table th { background-color: #1b3a4b; position: sticky; top: 0; color: #fff; text-align: center; z-index: 2; }
@@ -96,32 +115,38 @@ function wrapper(plugin_info) {
             .qff-col-name { width: 120px; word-wrap: break-word; }
             .qff-col-action { width: auto; }
             .qff-row-del { color: #f55; cursor: pointer; font-weight: bold; text-align: center; }
+
             .qff-btn { background-color: #204020; border: 1px solid #3c6; color: #fff; padding: 6px; text-align: center; cursor: pointer; border-radius: 2px; user-select: none; }
             .qff-btn:hover { background-color: #306030; }
             .qff-btn:active { background-color: #3c6; color: #000; }
             .qff-btn-danger { background-color: #402020; border: 1px solid #f55; }
             .qff-btn-action { background-color: #1b3a4b; border: 1px solid #4da; }
+
             .qff-cluster-ctrl { display: flex; align-items: center; background: #222; border: 1px solid #555; border-radius: 4px; margin-bottom: 5px;}
             .qff-cluster-btn { width: 30px; background: #333; color: #fff; text-align: center; cursor: pointer; padding: 5px 0; font-weight: bold; user-select: none; }
             .qff-cluster-btn:hover { background: #444; }
             .qff-cluster-val { flex: 1; text-align: center; font-weight: bold; color: #3c6; }
+
             .qff-stats { display: flex; justify-content: space-around; background: #111; border-top: 2px solid #4da; padding: 8px; color: #fff; font-size: 12px; flex-shrink: 0; }
             .qff-stat-item { text-align: center; flex: 1; }
             .qff-stat-val { display: block; font-weight: bold; color: #4da; font-size: 14px; margin-bottom: 2px; }
+
             .qff-cluster-summary { background: #222; border: 1px solid #444; padding: 5px; font-size: 11px; color: #ccc; margin-top: 10px; }
             .qff-summary-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid #333; }
             .qff-summary-row:last-child { border-bottom: none; }
             .qff-summary-label { font-weight: bold; color: #ddd; }
             .qff-summary-val { color: #3c6; font-weight: bold; }
+
             .qff-step-cluster-header { background: #3c6; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
             .qff-step-stitch-header { background: #d63; color: #000; padding: 5px; font-weight: bold; text-align: center; margin-top: 10px; }
+
             .qff-label { font-size: 14px; font-family: 'Arial Black', sans-serif; font-weight: 900; color: #ffce00; text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; text-align: center; pointer-events: none; white-space: nowrap;}
             .qff-label-anchor { color: #00ff00 !important; font-size: 18px; z-index: 1000 !important; }
         `).appendTo("head");
     };
 
     // =========================================================================
-    // UI BUILDER
+    // UI BUILDER & INTERACTIONS
     // =========================================================================
     self.showDialog = function() {
         if (!self.dialogData) self.dialogData = [];
@@ -150,6 +175,7 @@ function wrapper(plugin_info) {
                             <div class="qff-btn" onclick="window.plugin.quickFanFields.fetchPortals()">Get Portals</div>
                             <div class="qff-btn qff-btn-danger" onclick="window.plugin.quickFanFields.resetAll()">Reset</div>
                             <hr style="width:100%; border:0; border-top:1px solid #444; margin:5px 0;">
+
                             <label style="display:block; margin-bottom:4px; font-weight:bold;">Clusters (Areas)</label>
                             <div class="qff-cluster-ctrl">
                                 <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(-1)">-</div>
@@ -157,6 +183,7 @@ function wrapper(plugin_info) {
                                 <div class="qff-cluster-btn" onclick="window.plugin.quickFanFields.changeClusters(1)">+</div>
                             </div>
                             <div class="qff-btn" onclick="window.plugin.quickFanFields.recalculatePlan()">Shuffle Layout 🔀</div>
+
                             <div id="qff-cluster-summary-box" class="qff-cluster-summary"></div>
                             <div style="margin-top:auto; font-size:10px; color:#888; text-align:center;">v${self.PLUGIN_VERSION}</div>
                         </div>
@@ -169,6 +196,7 @@ function wrapper(plugin_info) {
                         <div id="qff-plan-content" style="flex:1; overflow-y:auto; padding:5px; min-height:0;"></div>
                     </div>
                 </div>
+
                 <div id="qff-stats-footer" class="qff-stats"></div>
             </div>`;
 
@@ -178,16 +206,16 @@ function wrapper(plugin_info) {
 
     self.switchTab = function(tab) {
         self.activeTab = tab;
-        $('.qff-tab-btn').removeClass('active'); 
+        $('.qff-tab-btn').removeClass('active');
         $('#qff-tab-btn-' + tab).addClass('active');
-        
-        $('.qff-tab-content').hide(); 
+
+        $('.qff-tab-content').hide();
         var target = $('#qff-tab-' + tab);
-        target.css('display', 'flex'); 
-        
-        if(tab === 'config') target.css('flex-direction', 'row'); 
+        target.css('display', 'flex');
+
+        if(tab === 'config') target.css('flex-direction', 'row');
         if(tab === 'plan') {
-            target.css('flex-direction', 'column'); 
+            target.css('flex-direction', 'column');
             self.renderPlanTab();
         }
     };
@@ -237,7 +265,7 @@ function wrapper(plugin_info) {
             return;
         }
 
-        // Local tracking set for this render only to prevent persistence bugs
+        // Local tracking for UI rendering
         var renderedFarmedGuids = new Set();
 
         var html = "";
@@ -249,20 +277,20 @@ function wrapper(plugin_info) {
 
             sect.steps.forEach(s => {
                 var totalKeysNeeded = self.keyReqs[s.guid] || 0;
-                
+
                 var farmHtml = "";
                 if (totalKeysNeeded > 0 && !renderedFarmedGuids.has(s.guid)) {
                     farmHtml = `<div style="color:#ffce00; font-weight:bold;">• Farm ${totalKeysNeeded} Keys</div>`;
                     renderedFarmedGuids.add(s.guid);
                 }
-                
+
                 var actionRows = "";
                 if (sect.type === 'stitch' && s.visitedBefore) {
                     actionRows += `<div>• Arrive at (Already Captured)</div>`;
                 } else {
                     actionRows += `<div>• Capture</div>`;
                 }
-                
+
                 actionRows += farmHtml;
                 s.links.forEach(act => actionRows += `<div>• ${act}</div>`);
 
@@ -292,7 +320,7 @@ function wrapper(plugin_info) {
             var keep = polyLayers.length > 0 ? polyLayers.some(poly => self.isPointInPolygon(latlng, poly)) : bounds.contains(latlng);
             if (keep) {
                 var rawName = p.options.data.title || "Untitled";
-                var cleanName = rawName.replace(/[.,:;#]/g, ''); 
+                var cleanName = rawName.replace(/[.,:;#]/g, '');
                 list.push({ guid: guid, name: cleanName, lat: latlng.lat, lng: latlng.lng });
             }
         });
@@ -311,58 +339,66 @@ function wrapper(plugin_info) {
     self.deletePortal = function(id) { self.dialogData = self.dialogData.filter(x => x.guid !== id); self.recalculatePlan(); };
     self.resetAll = function() { self.dialogData = []; self.clusterCount = 1; self.recalculatePlan(); };
 
+    // --- CSV Export (Robust) ---
     self.exportPlan = function() {
         if (!self.planSections.length) { alert("No plan to export."); return; }
-        
-        // Local tracking for export (consistent with render)
-        var exportFarmedGuids = new Set();
 
-        let csvContent = "\uFEFF"; 
-        
-        // Stats
+        var exportFarmedGuids = new Set();
+        let csvContent = "\uFEFF";
+
+        // Header Stats
         var maxKeys = 0;
         Object.values(self.keyReqs).forEach(k => { if(k > maxKeys) maxKeys = k; });
         var dist = self.calculateDistance();
         var ap = (self.allPoints.length * 1750) + (self.generatedLinks.length * 313) + (self.generatedFields.length * 1250);
 
-        csvContent += "PLAN STATISTICS\n";
-        csvContent += `Total Portals,${self.allPoints.length}\n`;
-        csvContent += `Total Fields,${self.generatedFields.length}\n`;
-        csvContent += `Total Links,${self.generatedLinks.length}\n`;
-        csvContent += `Max Keys Needed,${maxKeys}\n`;
-        csvContent += `Walking Distance,${dist} km\n`;
-        csvContent += `Total AP,${ap.toLocaleString().replace(/,/g, "")}\n\n`;
+        // Quote all fields to be safe against commas/newlines
+        const q = (str) => `"${String(str).replace(/"/g, '""')}"`;
+
+        csvContent += `${q("PLAN STATISTICS")}\n`;
+        csvContent += `${q("Total Portals")},${q(self.allPoints.length)}\n`;
+        csvContent += `${q("Total Fields")},${q(self.generatedFields.length)}\n`;
+        csvContent += `${q("Total Links")},${q(self.generatedLinks.length)}\n`;
+        csvContent += `${q("Max Keys Needed")},${q(maxKeys)}\n`;
+        csvContent += `${q("Walking Distance")},${q(dist + " km")}\n`;
+        csvContent += `${q("Total AP")},${q(ap.toLocaleString())}\n\n`;
 
         if (self.clusters.length > 0) {
-            csvContent += "CLUSTER SUMMARY\n";
+            csvContent += `${q("CLUSTER SUMMARY")}\n`;
             self.clusters.forEach((c, i) => {
                 var prefix = String.fromCharCode(65 + i);
-                csvContent += `Cluster ${prefix},${c.length} Portals\n`;
+                csvContent += `${q("Cluster " + prefix)},${q(c.length + " Portals")}\n`;
             });
             csvContent += "\n";
         }
 
-        csvContent += "EXECUTION PLAN\n";
-        csvContent += "Section,Step ID,Portal Name,Action,Check\n";
+        csvContent += `${q("EXECUTION PLAN")}\n`;
+        csvContent += `${q("Section")},${q("Step ID")},${q("Portal Name")},${q("Location")},${q("Action")},${q("Check")}\n`;
 
         self.planSections.forEach(sect => {
             sect.steps.forEach(s => {
-                let sectionName = sect.title.replace(/,/g, ""); 
-                let portalName = s.name.replace(/,/g, ""); 
-                if(portalName.includes(",")) portalName = `"${portalName}"`;
-                
+                let sectionName = sect.title;
+                let portalName = s.name;
+
+                // Location Link generation
+                var p = self.allPoints.find(x => x.guid === s.guid);
+                var locLink = "";
+                if (p) {
+                    locLink = `https://www.google.com/maps/search/?api=1&query=${p.latlng.lat},${p.latlng.lng}`;
+                }
+
                 let actions = [];
                 if (sect.type === 'stitch' && s.visitedBefore) actions.push("Arrive"); else actions.push("Capture");
-                
-                // Check key req
+
                 if (self.keyReqs[s.guid] > 0 && !exportFarmedGuids.has(s.guid)) {
                     actions.push(`Farm ${self.keyReqs[s.guid]} Keys`);
                     exportFarmedGuids.add(s.guid);
                 }
 
                 s.links.forEach(l => actions.push(l));
-                let actionStr = actions.join(" | ").replace(/,/g, "");
-                csvContent += `${sectionName},${s.label},${portalName},${actionStr}, \n`;
+                let actionStr = actions.join(" | ");
+
+                csvContent += `${q(sectionName)},${q(s.label)},${q(portalName)},${q(locLink)},${q(actionStr)},${q("")}\n`;
             });
         });
 
@@ -376,11 +412,12 @@ function wrapper(plugin_info) {
     };
 
     // =========================================================================
-    // CORE LOGIC 
+    // CORE LOGIC & ORCHESTRATION
     // =========================================================================
     self.recalculatePlan = function() {
         self.clearLayers();
 
+        // 1. Initialize
         self.allPoints = self.dialogData.map(d => ({
             guid: d.guid,
             latlng: L.latLng(d.lat, d.lng),
@@ -394,23 +431,24 @@ function wrapper(plugin_info) {
             return;
         }
 
+        // 2. Global Analysis
         var globalHullPoints = self.convexHull(self.allPoints);
         self.globalPerimeterGuids = globalHullPoints.map(p => p.guid);
-        self.performBisectingKMeans(self.clusterCount); 
+        self.performBisectingKMeans(self.clusterCount);
 
-        // Reset
+        // 3. Reset Simulation
         self.generatedLinks = [];
         self.generatedFields = [];
-        self.keyReqs = {}; 
+        self.keyReqs = {};
         self.linkMap = new Set();
         self.allPoints.forEach(p => self.keyReqs[p.guid] = 0);
         self.clusterHulls = [];
-        self.clusterPlanData = []; 
-        self.stitchPlanData = [];  
+        self.clusterPlanData = [];
+        self.stitchPlanData = [];
         self.planSections = [];
         self.globalVisitedGuids = new Set();
 
-        // 1. Calculate Links (Cluster + Stitch)
+        // 4. Link Calculation (Cluster -> Stitch)
         self.clusters.forEach((clusterPoints, idx) => {
             self.calcClusterLinks(clusterPoints, idx);
         });
@@ -419,19 +457,18 @@ function wrapper(plugin_info) {
             self.calcStitchLinks();
         }
 
-        // 2. Post-Process: Count Keys based on Generated Links
-        // This ensures 100% accuracy. Keys = Incoming Links.
+        // 5. Post-Process Counting
         self.calculateKeyRequirements();
 
-        // 3. Generate Text Steps
-        self.generatePlanText(); 
+        // 6. Generate Text
+        self.generatePlanText();
 
-        // 4. Update UI
+        // 7. Render
         self.dialogData.forEach(d => {
             var pt = self.allPoints.find(p => p.guid === d.guid);
             if (pt) d.label = pt.label;
         });
-        
+
         self.updateStats();
         $('#qff-table-body').html(self.renderTableRows());
         self.drawLayer();
@@ -439,13 +476,8 @@ function wrapper(plugin_info) {
     };
 
     self.calculateKeyRequirements = function() {
-        // Reset key reqs
         self.allPoints.forEach(p => self.keyReqs[p.guid] = 0);
-        
-        // Iterate ALL generated links
         self.generatedLinks.forEach(link => {
-            // Link is FROM -> TO. 
-            // Ingress requires key of TO.
             var targetGuid = link.b.guid;
             if (self.keyReqs[targetGuid] !== undefined) {
                 self.keyReqs[targetGuid]++;
@@ -453,22 +485,23 @@ function wrapper(plugin_info) {
         });
     };
 
+    /** Calculate Cluster Links (Pass 1) */
     self.calcClusterLinks = function(clusterPoints, idx) {
         if (clusterPoints.length === 0) return;
-        var prefix = String.fromCharCode(65 + idx); 
+        var prefix = String.fromCharCode(65 + idx);
         var color = self.CLUSTER_COLORS[idx % self.CLUSTER_COLORS.length];
 
         var clusterHull = self.convexHull(clusterPoints);
         self.clusterHulls.push({ points: clusterHull, label: prefix });
-        
+
         var anchor = clusterHull.find(p => self.globalPerimeterGuids.includes(p.guid));
-        if (!anchor) anchor = clusterHull[0]; 
+        if (!anchor) anchor = clusterHull[0];
 
         var pointsToFan = clusterPoints.filter(p => p.guid !== anchor.guid);
-        anchor.label = prefix; 
-        
+        anchor.label = prefix;
+
         var sorted = self.angularSortWithGap(anchor, pointsToFan);
-        
+
         var clusterData = { title: `Cluster ${prefix}`, type: 'cluster', steps: [] };
         clusterData.steps.push({ guid: anchor.guid, name: anchor.data.name, label: anchor.label, links: [], isAnchor: true });
 
@@ -485,10 +518,10 @@ function wrapper(plugin_info) {
                 linkIntents.push({ target: anchor, note: "" });
             }
 
-            for (var j = 0; j < localVisited.length - 1; j++) { 
+            for (var j = 0; j < localVisited.length - 1; j++) {
                 var past = localVisited[j];
-                if (past.guid === anchor.guid) continue; 
-                
+                if (past.guid === anchor.guid) continue;
+
                 if (!self.hasLink(target, past) && !self.isIntersecting(target, past)) {
                     var fCount = self.countFields(target, past);
                     self.addLink(target, past, color);
@@ -502,25 +535,26 @@ function wrapper(plugin_info) {
         self.clusterPlanData.push(clusterData);
     };
 
+    /** Calculate Stitch Links (Pass 1) */
     self.calcStitchLinks = function() {
-        var stitchStepsMap = new Map(); 
+        var stitchStepsMap = new Map();
 
         for (let i = 1; i < self.clusterHulls.length; i++) {
             let currHull = self.clusterHulls[i];
             for (let j = 0; j < i; j++) {
                 let prevHull = self.clusterHulls[j];
-                
+
                 currHull.points.forEach(p1 => {
                     prevHull.points.forEach(p2 => {
                         if (self.hasLink(p1, p2)) return;
                         if (!self.isIntersecting(p1, p2)) {
                             var fCount = self.countFields(p1, p2);
-                            self.addLink(p1, p2, '#FFFFFF'); 
+                            self.addLink(p1, p2, '#FFFFFF');
                             var note = fCount > 0 ? ` [+${fCount}F]` : "";
-                            
+
                             if (!stitchStepsMap.has(p1.guid)) {
-                                stitchStepsMap.set(p1.guid, { 
-                                    guid: p1.guid, name: p1.data.name, label: p1.label, lat: p1.latlng.lat, links: [] 
+                                stitchStepsMap.set(p1.guid, {
+                                    guid: p1.guid, name: p1.data.name, label: p1.label, lat: p1.latlng.lat, links: []
                                 });
                             }
                             stitchStepsMap.get(p1.guid).links.push({ target: p2, note: note, prevLabel: prevHull.label });
@@ -529,10 +563,10 @@ function wrapper(plugin_info) {
                 });
             }
         }
-        
+
         var steps = Array.from(stitchStepsMap.values());
         steps.sort((a,b) => b.lat - a.lat);
-        
+
         if (steps.length > 0) {
             self.stitchPlanData = { title: `Stitching (Hull Zipper)`, type: 'stitch', steps: steps };
         }
@@ -566,12 +600,16 @@ function wrapper(plugin_info) {
         return `${prefix}${target.label} ${target.data.name}`;
     };
 
+    // =========================================================================
+    // GEOMETRIC & MATH HELPERS
+    // =========================================================================
+    /** Bisecting K-Means for Cluster Generation */
     self.performBisectingKMeans = function(k) {
         var clusters = [self.allPoints.slice()];
         while (clusters.length < k) {
             var biggestIdx = -1, maxLen = -1;
             clusters.forEach((c, i) => { if (c.length > maxLen) { maxLen = c.length; biggestIdx = i; } });
-            if (biggestIdx === -1 || maxLen < 2) break; 
+            if (biggestIdx === -1 || maxLen < 2) break;
             var toSplit = clusters[biggestIdx];
             var [c1, c2] = self.runTwoMeans(toSplit);
             clusters.splice(biggestIdx, 1, c1, c2);
@@ -584,8 +622,8 @@ function wrapper(plugin_info) {
         var c1 = points[Math.floor(Math.random() * points.length)];
         var c2 = points[Math.floor(Math.random() * points.length)];
         var safeGuard = 0;
-        while(c1 === c2 && points.length > 1 && safeGuard < 10) { 
-            c2 = points[Math.floor(Math.random() * points.length)]; 
+        while(c1 === c2 && points.length > 1 && safeGuard < 10) {
+            c2 = points[Math.floor(Math.random() * points.length)];
             safeGuard++;
         }
         var group1 = [], group2 = [];
@@ -597,6 +635,7 @@ function wrapper(plugin_info) {
         return [group1, group2];
     };
 
+    /** Angular Sort with Widest Gap optimization */
     self.angularSortWithGap = function(anchor, points) {
         points.forEach(p => p.angle = Math.atan2(p.point.y - anchor.point.y, p.point.x - anchor.point.x));
         points.sort((a, b) => a.angle - b.angle);
@@ -605,7 +644,7 @@ function wrapper(plugin_info) {
         for(let i=0; i<points.length; i++) {
             let curr = points[i], next = points[(i+1)%points.length];
             let diff = next.angle - curr.angle;
-            if(diff < 0) diff += 2*Math.PI; 
+            if(diff < 0) diff += 2*Math.PI;
             if(diff > maxGap) { maxGap = diff; splitIdx = i+1; }
         }
         return points.slice(splitIdx).concat(points.slice(0, splitIdx));
@@ -637,7 +676,7 @@ function wrapper(plugin_info) {
             if (p3.guid === p1.guid || p3.guid === p2.guid) return;
             if (self.hasLink(p1, p3) && self.hasLink(p2, p3)) {
                 count++;
-                var fieldColor = self.generatedLinks[self.generatedLinks.length - 1].color || '#FFFFFF'; 
+                var fieldColor = self.generatedLinks[self.generatedLinks.length - 1].color || '#FFFFFF';
                 self.generatedFields.push({ pts: [p1.latlng, p2.latlng, p3.latlng], color: fieldColor });
             }
         });
@@ -649,6 +688,7 @@ function wrapper(plugin_info) {
         var sorted = points.slice().sort((a,b) => a.point.x === b.point.x ? a.point.y - b.point.y : a.point.x - b.point.x);
         var lower = [], upper = [];
         var cross = (o, a, b) => (a.point.x - o.point.x) * (b.point.y - o.point.y) - (a.point.y - o.point.y) * (b.point.x - o.point.x);
+
         for (var i = 0; i < sorted.length; i++) {
             while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], sorted[i]) <= 0) lower.pop();
             lower.push(sorted[i]);
